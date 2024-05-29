@@ -23,6 +23,19 @@ def parseInput(inputFile:str, ignore_row:int):
         raise ValueError(f'File:{inputFile} extension ({extension}) not supported')
     
 class AndroMoneyReader:
+    FROM_ACCOUNT_TYPE = {
+        'SYSTEM': 'Equity',
+        'Transfer': 'Asset',
+        'Income': 'Income',
+        'Expense': 'Asset',
+    }
+    TO_ACCOUNT_TYPE = {
+        'SYSTEM': 'Asset',
+        'Transfer': 'Asset',
+        'Income': 'Asset',
+        'Expense': 'Expenses',
+    }
+
     def __init__(self, reader, init_date:datetime):
         self.reader = reader
         self.curr_date = init_date
@@ -38,8 +51,8 @@ class AndroMoneyReader:
             'amount': row[2],
             'category': row[3],
             'sub_category': row[4],
-            'expense_account': row[6],
-            'income_account': row[7],
+            'from_account': row[6],
+            'to_account': row[7],
             'remark': row[8],
             'periodic': row[9],
             'project': row[10],
@@ -52,11 +65,26 @@ class AndroMoneyReader:
         # 0, 1 seems to be fine
         assert result['status'] in [None, 0, 1], f'{result} has status {result["status"]}'
 
-        if result['category'] == 'SYSTEM':
+        if result['category'] == 'SYSTEM': # Initial amount
             assert result['sub_category'] == 'INIT_AMOUNT', f'{result} has SYSTEM but not INIT_AMOUNT'
+            if float(result['amount']) <= 1e-6: #Skip zero amount
+                return self.__next__()
+            
+            result['payee'] = result['sub_category']
             result['time'] = self.curr_date
+            result['from_account'] = 'Opening Balances'
         else:
             self.curr_date = result['time']
+
+            if result['category'] == 'Transfer': # Transfer
+                result['payee'] = result['sub_category']
+            elif result['category'] == 'Income': # Income
+                result['from_account'] = result['sub_category']
+            else: # Expense
+                result['to_account'] = f"{result['category']}:{result['sub_category']}"
+                result['category'] = 'Expense'
+
+        del result['sub_category']
 
         return result
     
@@ -95,7 +123,7 @@ class LedgerWriter:
                 self.write_single_account(account['account'], account.get('amount', None))
 
         for tag, value in tags.items():
-            self.write_tag(f'AndroMoney_{tag}', value)
+            self.write_tag(f'{tag}', value)
 
         self.writer.write(f'\n')
 
@@ -132,52 +160,24 @@ def generateLedger(reader, outputFile:str):
         writer = LedgerWriter(writer=file)
         for row in reader:
             transaction_date = row['time']
-            if row['category'] == 'SYSTEM': # Initial amount
-                payee = row['sub_category']
-
-                if float(row['amount']) <= 1e-3:
-                    continue
-
-                changed_account = [{
-                    'account': f"Asset:{row['income_account']}",
-                    'amount': (row['amount'], row['currency']),
-                }, {
-                    'account': f"Equity:Opening Balances",
-                }]
-            elif row['category'] == 'Transfer': # Transfer
-                payee = row['sub_category']
-                changed_account = [{
-                    'account': f"Asset:{row['income_account']}",
-                    'amount': (row['amount'], row['currency']),
-                }, {
-                    'account': f"Asset:{row['expense_account']}",
-                }]
-            elif row['category'] == 'Income': # Income
-                payee = row['payee']
-                changed_account = [{
-                    'account': f"Asset:{row['income_account']}",
-                    'amount': (row['amount'], row['currency']),
-                }, {
-                    'account': f"Income:{row['sub_category']}",
-                }]
-            else: # Expense
-                payee = row['payee']
-                changed_account = [{
-                    'account': f"Expenses:{row['category']}:{row['sub_category']}",
-                    'amount': (row['amount'], row['currency']),
-                }, {
-                    'account': f"Asset:{row['expense_account']}",
-                }]
+            payee = row['payee']
+            changed_account = [{
+                'account': f"{AndroMoneyReader.TO_ACCOUNT_TYPE[row['category']]}:{row['to_account']}",
+                'amount': (row['amount'], row['currency']),
+            }, {
+                'account': f"{AndroMoneyReader.FROM_ACCOUNT_TYPE[row['category']]}:{row['from_account']}",
+            }]
+                
             tags = {
-                'uid': row['uid'],
-                'time': row['time'].strftime('%H%M'),
+                'AndroMoney_uid': row['uid'],
+                'AndroMoney_time': row['time'].strftime('%H%M'),
             }
             if row['status'] is not None:
-                tags['status'] = str(row['status'])
+                tags['AndroMoney_status'] = str(row['status'])
             if row['project'] != '':
-                tags['project'] = row['project']
+                tags['AndroMoney_project'] = row['project']
             if row['remark'] != '':
-                tags['remark'] = row['remark']
+                tags['AndroMoney_remark'] = row['remark']
             # write to ledger
             writer.write(transaction_date=transaction_date, payee=payee, changed_account=changed_account, tags=tags)
 
