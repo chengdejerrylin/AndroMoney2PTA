@@ -38,7 +38,6 @@ class AndroMoneyReader:
             'amount': row[2],
             'category': row[3],
             'sub_category': row[4],
-            'date': datetime.datetime.strptime(row[5], '%Y%m%d'),
             'expense_account': row[6],
             'income_account': row[7],
             'remark': row[8],
@@ -46,17 +45,18 @@ class AndroMoneyReader:
             'project': row[10],
             'payee': row[11],
             'uid': row[12],
-            'time': datetime.datetime.strptime(row[13].zfill(4), '%H%M'),
+            'time': datetime.datetime.strptime(f'{row[5]}{row[13].zfill(4)}', '%Y%m%d%H%M'),
             'status': int(row[14]) if row[14] != '' else None,
         }
 
-        assert result['status'] is None , f'{result} has status {result["status"]}'
+        # 0, 1 seems to be fine
+        assert result['status'] in [None, 0, 1], f'{result} has status {result["status"]}'
 
         if result['category'] == 'SYSTEM':
             assert result['sub_category'] == 'INIT_AMOUNT', f'{result} has SYSTEM but not INIT_AMOUNT'
-            result['date'] = self.curr_date
+            result['time'] = self.curr_date
         else:
-            self.curr_date = result['date']
+            self.curr_date = result['time']
 
         return result
     
@@ -94,7 +94,19 @@ class LedgerWriter:
             else:
                 self.write_single_account(account['account'], account.get('amount', None))
 
+        for tag, value in tags.items():
+            self.write_tag(f'AndroMoney_{tag}', value)
+
         self.writer.write(f'\n')
+
+    def write_tag(self, tag, value):
+        '''
+        tag: str
+        value: str
+        '''
+        tag = '_'.join(tag.split()) # substitute whitespace with underscore
+        value = ' '.join(value.split('\n')) # substitute newline with single space
+        self.writer.write(f'{" " * self.indent}; :{tag}: {value}\n')
 
     def write_single_account(self, account, amount=None, effective_date=None):
         '''
@@ -102,7 +114,9 @@ class LedgerWriter:
         amount: (number: str, currency: str)
         (optional) effective_date: datetime
         '''
-        self.writer.write(f'{" " * self.indent}{account}')
+        print_account = ' '.join(account.split()) # substitute whitespace with single space
+
+        self.writer.write(f'{" " * self.indent}{print_account}')
         if amount is not None:
             self.writer.write(f'  {amount[0]} {amount[1]}')
         if effective_date is not None:
@@ -117,11 +131,11 @@ def generateLedger(reader, outputFile:str):
     with open(outputFile, 'w') as file:
         writer = LedgerWriter(writer=file)
         for row in reader:
-            transaction_date = row['date']
+            transaction_date = row['time']
             if row['category'] == 'SYSTEM': # Initial amount
                 payee = row['sub_category']
 
-                if int(row['amount']) == 0:
+                if float(row['amount']) <= 1e-3:
                     continue
 
                 changed_account = [{
@@ -154,9 +168,18 @@ def generateLedger(reader, outputFile:str):
                 }, {
                     'account': f"Asset:{row['expense_account']}",
                 }]
-
+            tags = {
+                'uid': row['uid'],
+                'time': row['time'].strftime('%H%M'),
+            }
+            if row['status'] is not None:
+                tags['status'] = str(row['status'])
+            if row['project'] != '':
+                tags['project'] = row['project']
+            if row['remark'] != '':
+                tags['remark'] = row['remark']
             # write to ledger
-            writer.write(transaction_date=transaction_date, payee=payee, changed_account=changed_account, remark=row['remark'])
+            writer.write(transaction_date=transaction_date, payee=payee, changed_account=changed_account, tags=tags)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parse AndroMoney CSV export')
