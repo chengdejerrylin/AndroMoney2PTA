@@ -1,6 +1,7 @@
 import argparse
 import csv
 import datetime
+import json
 import os
 
 def parseInput(inputFile:str, ignore_row:int):
@@ -23,6 +24,19 @@ def parseInput(inputFile:str, ignore_row:int):
         raise ValueError(f'File:{inputFile} extension ({extension}) not supported')
     
 class AndroMoneyReader:
+    FROM_ACCOUNT_TYPE = {
+        'SYSTEM': 'Equity',
+        'Transfer': 'Asset',
+        'Income': 'Income',
+        'Expense': 'Asset',
+    }
+    TO_ACCOUNT_TYPE = {
+        'SYSTEM': 'Asset',
+        'Transfer': 'Asset',
+        'Income': 'Asset',
+        'Expense': 'Expenses',
+    }
+
     def __init__(self, reader, init_date:datetime):
         self.reader = reader
         self.curr_date = init_date
@@ -38,8 +52,8 @@ class AndroMoneyReader:
             'amount': row[2],
             'category': row[3],
             'sub_category': row[4],
-            'expense_account': row[6],
-            'income_account': row[7],
+            'from_account': row[6],
+            'to_account': row[7],
             'remark': row[8],
             'periodic': row[9],
             'project': row[10],
@@ -52,11 +66,26 @@ class AndroMoneyReader:
         # 0, 1 seems to be fine
         assert result['status'] in [None, 0, 1], f'{result} has status {result["status"]}'
 
-        if result['category'] == 'SYSTEM':
+        if result['category'] == 'SYSTEM': # Initial amount
             assert result['sub_category'] == 'INIT_AMOUNT', f'{result} has SYSTEM but not INIT_AMOUNT'
+            if float(result['amount']) <= 1e-6: #Skip zero amount
+                return self.__next__()
+            
+            result['payee'] = result['sub_category']
             result['time'] = self.curr_date
+            result['from_account'] = 'Opening Balances'
         else:
             self.curr_date = result['time']
+
+            if result['category'] == 'Transfer': # Transfer
+                result['payee'] = result['sub_category']
+            elif result['category'] == 'Income': # Income
+                result['from_account'] = result['sub_category']
+            else: # Expense
+                result['to_account'] = f"{result['category']}:{result['sub_category']}"
+                result['category'] = 'Expense'
+
+        del result['sub_category']
 
         return result
     
@@ -95,7 +124,7 @@ class LedgerWriter:
                 self.write_single_account(account['account'], account.get('amount', None))
 
         for tag, value in tags.items():
-            self.write_tag(f'AndroMoney_{tag}', value)
+            self.write_tag(f'{tag}', value)
 
         self.writer.write(f'\n')
 
@@ -123,63 +152,40 @@ class LedgerWriter:
             raise NotImplementedError('Effective dates inside account are not supported yet')
         self.writer.write(f'\n')
         
-def generateLedger(reader, outputFile:str):
+def generateLedger(reader, outputFile:str, account_mapping:dict={}, force_mapping_account_name:bool=False):
     '''
     reader: AndroMoneyReader
     outputFile: str
+    account_mapping: {AndroMoney_account: Ledger_account, ...}
+    force_mapping_account_name: bool
     '''
+    account_mapping['Opening Balances'] = {'name': 'Equity:Opening Balances'}
+
     with open(outputFile, 'w') as file:
         writer = LedgerWriter(writer=file)
         for row in reader:
-            transaction_date = row['time']
-            if row['category'] == 'SYSTEM': # Initial amount
-                payee = row['sub_category']
+            if force_mapping_account_name:
+                to_account_detail = account_mapping[row['to_account']]
+                from_account_detail = account_mapping[row['from_account']]
+            else:
+                to_account_detail = account_mapping.get(row['to_account'], {'name': f"{AndroMoneyReader.TO_ACCOUNT_TYPE[row['category']]}:{row['to_account']}"})
+                from_account_detail = account_mapping.get(row['from_account'], {'name': f"{AndroMoneyReader.FROM_ACCOUNT_TYPE[row['category']]}:{row['from_account']}"})
 
-                if float(row['amount']) <= 1e-3:
-                    continue
-
-                changed_account = [{
-                    'account': f"Asset:{row['income_account']}",
-                    'amount': (row['amount'], row['currency']),
-                }, {
-                    'account': f"Equity:Opening Balances",
-                }]
-            elif row['category'] == 'Transfer': # Transfer
-                payee = row['sub_category']
-                changed_account = [{
-                    'account': f"Asset:{row['income_account']}",
-                    'amount': (row['amount'], row['currency']),
-                }, {
-                    'account': f"Asset:{row['expense_account']}",
-                }]
-            elif row['category'] == 'Income': # Income
-                payee = row['payee']
-                changed_account = [{
-                    'account': f"Asset:{row['income_account']}",
-                    'amount': (row['amount'], row['currency']),
-                }, {
-                    'account': f"Income:{row['sub_category']}",
-                }]
-            else: # Expense
-                payee = row['payee']
-                changed_account = [{
-                    'account': f"Expenses:{row['category']}:{row['sub_category']}",
-                    'amount': (row['amount'], row['currency']),
-                }, {
-                    'account': f"Asset:{row['expense_account']}",
-                }]
+            changed_account = [{
+                'account': to_account_detail['name'],
+                'amount': (row['amount'], row['currency']),
+            }, {
+                'account': from_account_detail['name'],
+            }]
+                
             tags = {
-                'uid': row['uid'],
-                'time': row['time'].strftime('%H%M'),
+                'AndroMoney_time': row['time'].strftime('%H%M'),
             }
-            if row['status'] is not None:
-                tags['status'] = str(row['status'])
-            if row['project'] != '':
-                tags['project'] = row['project']
-            if row['remark'] != '':
-                tags['remark'] = row['remark']
+            for tag_name in ['status', 'project', 'remark', 'uid']:
+                if row[tag_name] != '' and row[tag_name] is not None:
+                    tags[f'AndroMoney_{tag_name}'] = str(row[tag_name])
             # write to ledger
-            writer.write(transaction_date=transaction_date, payee=payee, changed_account=changed_account, tags=tags)
+            writer.write(transaction_date=row['time'], payee=row['payee'], changed_account=changed_account, tags=tags)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parse AndroMoney CSV export')
@@ -187,10 +193,21 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=str, help='Output CSV file')
     parser.add_argument('--ignore_row', type=int, help='Ignore first n rows', default=2)
     parser.add_argument('--init_date', type=lambda s: datetime.datetime.strptime(s, '%Y%m%d'), help='Ignore first n rows', default='20160824')
+    parser.add_argument('--account_name_file', type=str, help='Account name mapping JSON file')
+    parser.add_argument('--force_mapping_account_name', action='store_true', help='Force mapping account name')
     args = parser.parse_args()
 
     if args.output is None:
         args.output = os.path.splitext(args.input)[0] + '.ledger'
+
+    if args.account_name_file is not None:
+        with open(args.account_name_file, 'r') as file:
+            account_mapping = json.load(file)
+    elif args.force_mapping_account_name:
+        raise ValueError('Account name mapping JSON file is required')
+    else:
+        account_mapping = {}
+
     reader = parseInput(inputFile=args.input, ignore_row=args.ignore_row)
     reader = AndroMoneyReader(reader, init_date=args.init_date)
-    generateLedger(reader, outputFile=args.output)
+    generateLedger(reader, outputFile=args.output, account_mapping=account_mapping, force_mapping_account_name=args.force_mapping_account_name)
