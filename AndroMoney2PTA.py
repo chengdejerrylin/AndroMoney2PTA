@@ -26,14 +26,14 @@ def parseInput(inputFile:str, ignore_row:int):
 class AndroMoneyReader:
     FROM_ACCOUNT_TYPE = {
         'SYSTEM': 'Equity',
-        'Transfer': 'Asset',
+        'Transfer': 'Assets',
         'Income': 'Income',
-        'Expense': 'Asset',
+        'Expense': 'Assets',
     }
     TO_ACCOUNT_TYPE = {
-        'SYSTEM': 'Asset',
-        'Transfer': 'Asset',
-        'Income': 'Asset',
+        'SYSTEM': 'Assets',
+        'Transfer': 'Assets',
+        'Income': 'Assets',
         'Expense': 'Expenses',
     }
 
@@ -81,6 +81,9 @@ class AndroMoneyReader:
                 result['payee'] = result['sub_category']
             elif result['category'] == 'Income': # Income
                 result['from_account'] = result['sub_category']
+            elif result['category'] == 'Investment' and result['sub_category'] != '保險' and result['sub_category'] != '樂透彩': # Income - Investment
+                result['from_account'] = f'Investment:{result["sub_category"]}'
+                result['category'] = 'Income'
             else: # Expense
                 result['to_account'] = f"{result['category']}:{result['sub_category']}"
                 result['category'] = 'Expense'
@@ -164,6 +167,15 @@ def generateLedger(reader, outputFile:str, account_mapping:dict={}, force_mappin
     with open(outputFile, 'w') as file:
         writer = LedgerWriter(writer=file)
         for row in reader:
+
+            # to_account and from_account are reversed in tags
+            tags = {
+                'AndroMoney_time': row['time'].strftime('%H%M'),
+            }
+            for tag_name in ['status', 'project', 'remark', 'uid', 'to_account', 'from_account']:
+                if row[tag_name] != '' and row[tag_name] is not None:
+                    tags[f'AndroMoney_{tag_name}'] = str(row[tag_name])
+
             if force_mapping_account_name:
                 to_account_detail = account_mapping[row['to_account']]
                 from_account_detail = account_mapping[row['from_account']]
@@ -177,13 +189,6 @@ def generateLedger(reader, outputFile:str, account_mapping:dict={}, force_mappin
             }, {
                 'account': from_account_detail['name'],
             }]
-                
-            tags = {
-                'AndroMoney_time': row['time'].strftime('%H%M'),
-            }
-            for tag_name in ['status', 'project', 'remark', 'uid']:
-                if row[tag_name] != '' and row[tag_name] is not None:
-                    tags[f'AndroMoney_{tag_name}'] = str(row[tag_name])
             # write to ledger
             writer.write(transaction_date=row['time'], payee=row['payee'], changed_account=changed_account, tags=tags)
 
