@@ -1,0 +1,1 @@
+# AndroMoney to Plain Text Accounting (PTA) Converter
