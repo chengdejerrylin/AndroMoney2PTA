@@ -23,15 +23,16 @@ def parseInput(inputFile:str, ignore_row:int):
         raise ValueError(f'File:{inputFile} extension ({extension}) not supported')
     
 class AndroMoneyReader:
-    def __init__(self, reader):
+    def __init__(self, reader, init_date:datetime):
         self.reader = reader
+        self.curr_date = init_date
 
     def __iter__(self):
         return self
 
     def __next__(self):
         row = next(self.reader)
-        return {
+        result = {
             'id': int(row[0]),
             'currency': row[1],
             'amount': row[2],
@@ -48,6 +49,16 @@ class AndroMoneyReader:
             'time': datetime.datetime.strptime(row[13].zfill(4), '%H%M'),
             'status': int(row[14]) if row[14] != '' else None,
         }
+
+        assert result['status'] is None , f'{result} has status {result["status"]}'
+
+        if result['category'] == 'SYSTEM':
+            assert result['sub_category'] == 'INIT_AMOUNT', f'{result} has SYSTEM but not INIT_AMOUNT'
+            result['date'] = self.curr_date
+        else:
+            self.curr_date = result['date']
+
+        return result
     
 class LedgerWriter:
     def __init__(self, writer, indent:int=4):
@@ -98,22 +109,16 @@ class LedgerWriter:
             raise NotImplementedError('Effective dates inside account are not supported yet')
         self.writer.write(f'\n')
         
-    
-def generateLedger(reader, outputFile:str, init_date:str):
+def generateLedger(reader, outputFile:str):
     '''
     reader: AndroMoneyReader
     outputFile: str
-    init_date: str
     '''
-    curr_date = init_date
     with open(outputFile, 'w') as file:
         writer = LedgerWriter(writer=file)
         for row in reader:
-            assert row['status'] is None, f'{row} has status {row["status"]}'
-
+            transaction_date = row['date']
             if row['category'] == 'SYSTEM': # Initial amount
-                assert row['sub_category'] == 'INIT_AMOUNT', f'{row} has SYSTEM but not INIT_AMOUNT'
-                transaction_date = curr_date
                 payee = row['sub_category']
 
                 if int(row['amount']) == 0:
@@ -125,17 +130,30 @@ def generateLedger(reader, outputFile:str, init_date:str):
                 }, {
                     'account': f"Equity:Opening Balances",
                 }]
-            else:
-                changed_account = []
-                transaction_date = row['date']
-                if row['category'] == 'Transfer': # Transfer
-                    payee = row['sub_category']
-                elif row['category'] == 'Income': # Income
-                    payee = row['payee']
-                else: # Expense
-                    payee = row['payee']
-
-                curr_date = row['date']
+            elif row['category'] == 'Transfer': # Transfer
+                payee = row['sub_category']
+                changed_account = [{
+                    'account': f"Asset:{row['income_account']}",
+                    'amount': (row['amount'], row['currency']),
+                }, {
+                    'account': f"Asset:{row['expense_account']}",
+                }]
+            elif row['category'] == 'Income': # Income
+                payee = row['payee']
+                changed_account = [{
+                    'account': f"Asset:{row['income_account']}",
+                    'amount': (row['amount'], row['currency']),
+                }, {
+                    'account': f"Income:{row['sub_category']}",
+                }]
+            else: # Expense
+                payee = row['payee']
+                changed_account = [{
+                    'account': f"Expenses:{row['category']}:{row['sub_category']}",
+                    'amount': (row['amount'], row['currency']),
+                }, {
+                    'account': f"Asset:{row['expense_account']}",
+                }]
 
             # write to ledger
             writer.write(transaction_date=transaction_date, payee=payee, changed_account=changed_account, remark=row['remark'])
@@ -151,5 +169,5 @@ if __name__ == '__main__':
     if args.output is None:
         args.output = os.path.splitext(args.input)[0] + '.ledger'
     reader = parseInput(inputFile=args.input, ignore_row=args.ignore_row)
-    reader = AndroMoneyReader(reader)
-    generateLedger(reader, outputFile=args.output, init_date=args.init_date)
+    reader = AndroMoneyReader(reader, init_date=args.init_date)
+    generateLedger(reader, outputFile=args.output)
