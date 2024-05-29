@@ -26,14 +26,14 @@ def parseInput(inputFile:str, ignore_row:int):
 class AndroMoneyReader:
     FROM_ACCOUNT_TYPE = {
         'SYSTEM': 'Equity',
-        'Transfer': 'Asset',
+        'Transfer': 'Assets',
         'Income': 'Income',
-        'Expense': 'Asset',
+        'Expense': 'Assets',
     }
     TO_ACCOUNT_TYPE = {
-        'SYSTEM': 'Asset',
-        'Transfer': 'Asset',
-        'Income': 'Asset',
+        'SYSTEM': 'Assets',
+        'Transfer': 'Assets',
+        'Income': 'Assets',
         'Expense': 'Expenses',
     }
 
@@ -81,7 +81,7 @@ class AndroMoneyReader:
                 result['payee'] = result['sub_category']
             elif result['category'] == 'Income': # Income
                 result['from_account'] = result['sub_category']
-            elif result['category'] == 'Investment': # Income - Investment
+            elif result['category'] == 'Investment' and result['sub_category'] != '保險' and result['sub_category'] != '樂透彩': # Income - Investment
                 result['from_account'] = f'Investment:{result["sub_category"]}'
                 result['category'] = 'Income'
             else: # Expense
