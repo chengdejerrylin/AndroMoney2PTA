@@ -1,6 +1,7 @@
 import argparse
 import csv
 import datetime
+import json
 import os
 
 def parseInput(inputFile:str, ignore_row:int):
@@ -151,35 +152,40 @@ class LedgerWriter:
             raise NotImplementedError('Effective dates inside account are not supported yet')
         self.writer.write(f'\n')
         
-def generateLedger(reader, outputFile:str):
+def generateLedger(reader, outputFile:str, account_mapping:dict={}, force_mapping_account_name:bool=False):
     '''
     reader: AndroMoneyReader
     outputFile: str
+    account_mapping: {AndroMoney_account: Ledger_account, ...}
+    force_mapping_account_name: bool
     '''
+    account_mapping['Opening Balances'] = {'name': 'Equity:Opening Balances'}
+
     with open(outputFile, 'w') as file:
         writer = LedgerWriter(writer=file)
         for row in reader:
-            transaction_date = row['time']
-            payee = row['payee']
+            if force_mapping_account_name:
+                to_account_detail = account_mapping[row['to_account']]
+                from_account_detail = account_mapping[row['from_account']]
+            else:
+                to_account_detail = account_mapping.get(row['to_account'], {'name': f"{AndroMoneyReader.TO_ACCOUNT_TYPE[row['category']]}:{row['to_account']}"})
+                from_account_detail = account_mapping.get(row['from_account'], {'name': f"{AndroMoneyReader.FROM_ACCOUNT_TYPE[row['category']]}:{row['from_account']}"})
+
             changed_account = [{
-                'account': f"{AndroMoneyReader.TO_ACCOUNT_TYPE[row['category']]}:{row['to_account']}",
+                'account': to_account_detail['name'],
                 'amount': (row['amount'], row['currency']),
             }, {
-                'account': f"{AndroMoneyReader.FROM_ACCOUNT_TYPE[row['category']]}:{row['from_account']}",
+                'account': from_account_detail['name'],
             }]
                 
             tags = {
-                'AndroMoney_uid': row['uid'],
                 'AndroMoney_time': row['time'].strftime('%H%M'),
             }
-            if row['status'] is not None:
-                tags['AndroMoney_status'] = str(row['status'])
-            if row['project'] != '':
-                tags['AndroMoney_project'] = row['project']
-            if row['remark'] != '':
-                tags['AndroMoney_remark'] = row['remark']
+            for tag_name in ['status', 'project', 'remark', 'uid']:
+                if row[tag_name] != '' and row[tag_name] is not None:
+                    tags[f'AndroMoney_{tag_name}'] = str(row[tag_name])
             # write to ledger
-            writer.write(transaction_date=transaction_date, payee=payee, changed_account=changed_account, tags=tags)
+            writer.write(transaction_date=row['time'], payee=row['payee'], changed_account=changed_account, tags=tags)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parse AndroMoney CSV export')
@@ -187,10 +193,21 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=str, help='Output CSV file')
     parser.add_argument('--ignore_row', type=int, help='Ignore first n rows', default=2)
     parser.add_argument('--init_date', type=lambda s: datetime.datetime.strptime(s, '%Y%m%d'), help='Ignore first n rows', default='20160824')
+    parser.add_argument('--account_name_file', type=str, help='Account name mapping JSON file')
+    parser.add_argument('--force_mapping_account_name', action='store_true', help='Force mapping account name')
     args = parser.parse_args()
 
     if args.output is None:
         args.output = os.path.splitext(args.input)[0] + '.ledger'
+
+    if args.account_name_file is not None:
+        with open(args.account_name_file, 'r') as file:
+            account_mapping = json.load(file)
+    elif args.force_mapping_account_name:
+        raise ValueError('Account name mapping JSON file is required')
+    else:
+        account_mapping = {}
+
     reader = parseInput(inputFile=args.input, ignore_row=args.ignore_row)
     reader = AndroMoneyReader(reader, init_date=args.init_date)
-    generateLedger(reader, outputFile=args.output)
+    generateLedger(reader, outputFile=args.output, account_mapping=account_mapping, force_mapping_account_name=args.force_mapping_account_name)
