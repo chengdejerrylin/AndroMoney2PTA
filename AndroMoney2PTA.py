@@ -81,6 +81,9 @@ class AndroMoneyReader:
                 result['payee'] = result['sub_category']
             elif result['category'] == 'Income': # Income
                 result['from_account'] = result['sub_category']
+            elif result['category'] == 'Investment': # Income - Investment
+                result['from_account'] = f'Investment:{result["sub_category"]}'
+                result['category'] = 'Income'
             else: # Expense
                 result['to_account'] = f"{result['category']}:{result['sub_category']}"
                 result['category'] = 'Expense'
